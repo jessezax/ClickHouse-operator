@@ -1,0 +1,146 @@
+apiVersion: "clickhouse.altinity.com/v1"
+kind: "ClickHouseInstallation"
+metadata:
+  name: "clickhouse-shard"
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: "9000"
+    prometheus.io/scrape: "true"
+
+spec:
+  defaults:
+    templates:
+      serviceTemplate: clickhouse-lb
+  configuration:
+    clusters:
+      - name: "monitoring"
+        # Templates are specified for this cluster explicitly
+        templates:
+          podTemplate: clickhouse-server
+          clusterServiceTemplate: clickhouse-svc
+        layout:
+          shardsCount: 10
+          replicasCount: 2
+    zookeeper:
+      nodes:
+        - host: zk-0.zk.horus.svc.cluster.local
+          port: 2181
+        - host: zk-1.zk.horus.svc.cluster.local
+          port: 2181
+        - host: zk-2.zk.horus.svc.cluster.local
+          port: 2181
+    profiles:
+      default/load_balancing: random
+      default/joined_subquery_requires_alias: 0
+      default/max_memory_usage: 38654705664
+      readonly/max_memory_usage: 38654705664
+      readonly/use_uncompressed_cache: 1
+      readonly/load_balancing: random
+      readonly/readonly: 1
+    users:
+      default/password:
+      default/networks/ip:
+        - "::/0"
+      default/profile: default
+      default/quota: default
+      ck/password_sha256_hex: "your password"
+      ck/networks/ip:
+        - "::/0"
+      ck/profile: readonly
+      ck/quota: default
+      ck/quota/database: default
+    quotas:
+      default/interval/duration: 3600
+      default/interval/queries: 0
+      default/interval/errors: 0
+      default/interval/result_rows: 0
+      default/interval/read_rows: 0
+      default/interval/execution_time: 0
+
+    files:
+      graphite.xml: |-
+        <yandex>
+
+        </yandex>
+
+  templates:
+    serviceTemplates:
+      - name: clickhouse-svc
+        generateName: "clickhouse"
+        # type ServiceSpec struct from k8s.io/core/v1
+        metadata:
+          labels:
+            custom.label: "custom.value"
+        spec:
+          ports:
+            - name: rpc
+              port: 9000
+            - name: rest
+              port: 8123
+            - name: interserver
+              port: 9009
+          type: ClusterIP
+          clusterIP: None
+      - name: clickhouse-lb
+        generateName: "clickhouse-{chi}"
+        metadata:
+          annotations:
+            kubernetes.io/ingress.class: alb
+            alb.ingress.kubernetes.io/target-type: ip
+            alb.ingress.kubernetes.io/certificate-arn: "your alb ip"
+            service.beta.kubernetes.io/aws-load-balancer-backend-protocol: tcp
+          # type ServiceSpec struct from k8s.io/core/v1
+        spec:
+          ports:
+            - name: rpc
+              port: 9000
+              targetPort: 9000
+            - name: rest
+              port: 8123
+              targetPort: 8123
+          type: LoadBalancer
+    podTemplates:
+      - name: clickhouse-server
+        spec:
+          imagePullSecrets:
+            - name: k8s-hub-mobvista
+
+          containers:
+            - name: clickhouse
+              image: "yandex/clickhouse-server"
+              imagePullPolicy: IfNotPresent
+              terminationMessagePath: "/var/log/clickhouse-server/clickhouse-server.err.log"
+              volumeMounts:
+              - name: clickhouse-data
+                mountPath: /var/lib/clickhouse
+              livenessProbe:
+                tcpSocket:
+                  port: 8123
+                initialDelaySeconds: 60
+                periodSeconds: 60
+              readinessProbe:
+                tcpSocket:
+                  port: 8123
+                initialDelaySeconds: 60
+                periodSeconds: 60
+              lifecycle:
+                preStop:
+                  exec:
+                    command: [ "/bin/sh", "-c", "pkill -SIGTERM clickhouse-server" ]
+              resources:
+                limits:
+                  cpu: 16
+                  memory: 128Gi
+                requests:
+                  cpu: 14
+                  memory: 24Gi
+
+    volumeClaimTemplates:
+      - name: clickhouse-data
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: disk
+          resources:
+            requests:
+              storage: 3000Gi
